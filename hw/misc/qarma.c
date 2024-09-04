@@ -4,6 +4,8 @@
 #include "qemu/typedefs.h"
 #include "hw/misc/qarma.h"
 #include "crypto/qarma64.h"
+#include "sysemu/device_tree.h"
+
 #include <stdint.h>
 
 #define TYPE_QARMA "qarma"
@@ -178,10 +180,32 @@ static void qarma_register_types(void) {
 
 type_init(qarma_register_types);
 
-DeviceState *qarma_create(hwaddr addr) {
+const char compatible[] = "daem,PtrauthDevice-1.0";
+
+DeviceState *qarma_create(const VirtMachineState *vms, int qarma) {
     DeviceState *dev = qdev_new(TYPE_QARMA);
+    MachineState *ms = MACHINE(vms);
+    char *nodename;
+
+    hwaddr base = vms->memmap[qarma].base;
+    hwaddr size = vms->memmap[qarma].size;
+
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, addr);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+
+    // Register the device inside the device tree
+    nodename = g_strdup_printf("/ptrauth@%" PRIx64, base);
+    qemu_fdt_add_subnode(ms->fdt, nodename);
+    qemu_fdt_setprop(ms->fdt, nodename, "compatible", compatible, sizeof(compatible));
+
+    qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg",
+                                 2, base,
+                                 2, size - 0x1000,
+                                 2, base + 0x1000,
+                                 2, 0x1000);
+
+    g_free(nodename);
+
     return dev;
 }
 
