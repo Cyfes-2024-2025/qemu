@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "qemu/typedefs.h"
@@ -22,6 +23,9 @@
 
 typedef struct qarma_device_state_s QarmaDeviceState;
 DECLARE_INSTANCE_CHECKER(QarmaDeviceState, QARMA_DEVICE, TYPE_QARMA);
+
+#define QARMA_REG_SIZE 0x2000
+#define QARMA_REG_PRIV_SIZE 0x1000
 
 struct qarma_device_state_s {
     SysBusDevice parent;
@@ -84,6 +88,8 @@ static uint64_t qarma_read(void *opaque, hwaddr addr, unsigned int size) {
     uint64_t cipher;
     QarmaDeviceState *state = (QarmaDeviceState*)opaque;
 
+    qemu_log_mask(LOG_GUEST_ERROR, "qarma: read size: %u\n", size);
+
     switch(addr) {
     case REG_KEY_LO:
         return state->key_low;
@@ -142,11 +148,15 @@ static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int 
 static const MemoryRegionOps qarma_ops = {
     .read = qarma_read,
     .write = qarma_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid = {
-        .min_access_size = 8,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+
+    .impl = {
+        .min_access_size = 4,
         .max_access_size = 8,
-        .unaligned = false,
+    },
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 8,
     }
 
 };
@@ -154,9 +164,8 @@ static const MemoryRegionOps qarma_ops = {
 static void qarma_instance_init(Object *obj) {
     QarmaDeviceState *state = QARMA_DEVICE(obj);
 
-    int const size = 0x2000;
-
-    memory_region_init_io(&state->iomem, obj, &qarma_ops, state, TYPE_QARMA, size); sysbus_init_mmio(SYS_BUS_DEVICE(obj), &state->iomem);
+    memory_region_init_io(&state->iomem, obj, &qarma_ops, state, TYPE_QARMA, QARMA_REG_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &state->iomem);
 
     state->chip_id = CHIP_ID;
 
@@ -190,6 +199,8 @@ DeviceState *qarma_create(const VirtMachineState *vms, int qarma) {
     hwaddr base = vms->memmap[qarma].base;
     hwaddr size = vms->memmap[qarma].size;
 
+    assert(size == QARMA_REG_SIZE);
+
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
 
@@ -200,9 +211,9 @@ DeviceState *qarma_create(const VirtMachineState *vms, int qarma) {
 
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg",
                                  2, base,
-                                 2, size - 0x1000,
-                                 2, base + 0x1000,
-                                 2, 0x1000);
+                                 2, size - QARMA_REG_PRIV_SIZE,
+                                 2, base + QARMA_REG_PRIV_SIZE,
+                                 2, QARMA_REG_PRIV_SIZE);
 
     g_free(nodename);
 
