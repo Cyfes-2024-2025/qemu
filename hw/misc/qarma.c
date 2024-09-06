@@ -41,6 +41,8 @@ struct qarma_device_state_s {
     uint64_t plaintext;
     uint64_t ciphertext;
     uint64_t decoded_key;
+
+    bool last_write_was_plaintext; 
 };
 
 
@@ -121,7 +123,6 @@ static uint64_t qarma_read(void *opaque, hwaddr addr, unsigned int size) {
 static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size) {
     QarmaDeviceState *state = (QarmaDeviceState*)opaque;
 
-
     switch(addr) {
     case REG_KEY_LO:
         state->key_low = value;
@@ -131,10 +132,12 @@ static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int 
         break;
     case REG_PLAINTEXT:
         state->plaintext = value;
-        state->ciphertext = sign_pointer(value, state->tweak, state->key_low, state->key_high);
         break;
     case REG_TWEAK:
         state->tweak = value;
+        if (state->last_write_was_plaintext) {
+            state->ciphertext = sign_pointer(state->plaintext, state->tweak, state->key_low, state->key_high);
+        }
         break;
     case REG_CIPHER:
         // TODO: Send an interrupt in case key is wrong
@@ -143,6 +146,8 @@ static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int 
     default:
         break;
     }
+
+    state->last_write_was_plaintext = (addr == REG_PLAINTEXT);
 }
 
 static const MemoryRegionOps qarma_ops = {
@@ -174,6 +179,7 @@ static void qarma_instance_init(Object *obj) {
     state->plaintext = 0;
     state->tweak = 0;
     state->ciphertext = 0;
+    state->last_write_was_plaintext = false;
 }
 
 static const TypeInfo qarma_info = {
