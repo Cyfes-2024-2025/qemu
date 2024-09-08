@@ -3,7 +3,9 @@
 #include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "qemu/typedefs.h"
+#include "hw/irq.h"
 #include "hw/misc/qarma.h"
+#include "hw/arm/fdt.h"
 #include "crypto/qarma64.h"
 #include "sysemu/device_tree.h"
 
@@ -14,6 +16,7 @@
 
 #define REG_KEY_LO 0x0
 #define REG_KEY_HI 0x8
+#define REG_KEY_CTRL 0x10
 
 #define REG_PLAINTEXT 0x1010
 #define REG_TWEAK 0x1018
@@ -41,6 +44,8 @@ struct qarma_device_state_s {
     uint64_t plaintext;
     uint64_t ciphertext;
     uint64_t decoded_key;
+
+    qemu_irq irq_invalid_signature;
 
     bool last_write_was_plaintext; 
 };
@@ -99,6 +104,9 @@ static uint64_t qarma_read(void *opaque, hwaddr addr, unsigned int size) {
     case REG_KEY_HI:
         return state->key_high;
         break;
+    case REG_KEY_CTRL:
+        return 0x0; // FIXME: Is this right?
+        break;
     case REG_PLAINTEXT:
         return state->plaintext;
         break;
@@ -121,6 +129,7 @@ static uint64_t qarma_read(void *opaque, hwaddr addr, unsigned int size) {
 }
 
 static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size) {
+    uint64_t authed_pointer;
     QarmaDeviceState *state = (QarmaDeviceState*)opaque;
 
     switch(addr) {
@@ -129,6 +138,9 @@ static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int 
         break;
     case REG_KEY_HI:
         state->key_high = value;
+        break;
+    case REG_KEY_CTRL:
+        qemu_set_irq(state->irq_invalid_signature, 0);
         break;
     case REG_PLAINTEXT:
         state->plaintext = value;
@@ -141,7 +153,12 @@ static void qarma_write(void *opaque, hwaddr addr, uint64_t value, unsigned int 
         break;
     case REG_CIPHER:
         // TODO: Send an interrupt in case key is wrong
-        state->ciphertext = auth_pointer(value, state->tweak, state->key_low, state->key_high);
+        authed_pointer = auth_pointer(value, state->tweak, state->key_low, state->key_high);
+
+        if (authed_pointer == 0) {
+            qemu_set_irq(state->irq_invalid_signature, 1);
+        }
+        state->ciphertext = authed_pointer;
         break;
     default:
         break;
@@ -171,6 +188,8 @@ static void qarma_instance_init(Object *obj) {
 
     memory_region_init_io(&state->iomem, obj, &qarma_ops, state, TYPE_QARMA, QARMA_REG_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &state->iomem);
+
+    sysbus_init_irq(SYS_BUS_DEVICE(obj), &state->irq_invalid_signature);
 
     state->chip_id = CHIP_ID;
 
@@ -204,11 +223,15 @@ DeviceState *qarma_create(const VirtMachineState *vms, int qarma) {
 
     hwaddr base = vms->memmap[qarma].base;
     hwaddr size = vms->memmap[qarma].size;
+    int irq = vms->irqmap[qarma];
 
     assert(size == QARMA_REG_SIZE);
 
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(vms->gic, irq));
+
 
     // Register the device inside the device tree
     nodename = g_strdup_printf("/ptrauth@%" PRIx64, base);
@@ -220,6 +243,13 @@ DeviceState *qarma_create(const VirtMachineState *vms, int qarma) {
                                  2, size - QARMA_REG_PRIV_SIZE,
                                  2, base + QARMA_REG_PRIV_SIZE,
                                  2, QARMA_REG_PRIV_SIZE);
+
+    qemu_fdt_setprop_cells(
+        ms->fdt, nodename, "interrupts",
+        GIC_FDT_IRQ_TYPE_SPI,      // shared periperal interrupt, can go to any core
+        irq,
+        GIC_FDT_IRQ_FLAGS_LEVEL_HI // high level triggered
+    );
 
     g_free(nodename);
 
