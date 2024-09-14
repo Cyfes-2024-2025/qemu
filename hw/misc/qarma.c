@@ -120,8 +120,7 @@ static uint64_t qarma_read(void *opaque, hwaddr addr, unsigned int size) {
         return cipher;
         break;
     default:
-        return 0xF0000000 + addr + (size << 16);
-        // return 0xDEADBEEF;
+        return 0xDEADBEEF;
         break;
     }
 
